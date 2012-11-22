@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.net.DhcpInfo;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
@@ -15,6 +16,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -22,6 +24,11 @@ import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.Toast;
 
+import java.io.IOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.net.SocketException;
 import java.util.List;
 
 public class WirelessSettings extends Activity implements AdapterView.OnItemClickListener {
@@ -41,6 +48,7 @@ public class WirelessSettings extends Activity implements AdapterView.OnItemClic
     private static final int STOP_PROGRESS = 111;
     private static final int CONNECT_STATUS = 113;
 
+    private static final int UDP_PORT = 8899;
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -210,9 +218,12 @@ public class WirelessSettings extends Activity implements AdapterView.OnItemClic
                     String name = (String) msg.obj;
                     String message = null;
                     if (mConnected) {
-                        message = "成功连接" + name + "。请按后退键返回主界面";
+                        message = "成功连接" + name + "。初始化...";
+                        threadForUdpClient();
+                        finish();
                     } else {
-                        message = "连接" + name + "失败。请按后退键返回主界面";
+                        message = "连接" + name + "失败。";
+                        finish();
                     }
                     Toast.makeText(mActivity, message, Toast.LENGTH_LONG)
                             .show();
@@ -241,6 +252,71 @@ public class WirelessSettings extends Activity implements AdapterView.OnItemClic
                 obj), delayMillis);
     }
 
+    private void threadForUdpClient() {
+        new Thread() {
+            @Override
+            public void run() {
+                try {
+                    DatagramSocket socket = new DatagramSocket();
+                    socket.setBroadcast(true);
+                    socket.setSoTimeout(5000);
+
+                    sendDiscoveryRequest(socket);
+
+                    listenForResponses(socket);
+                    Log.i("test", "udp client close...");
+                    socket.close();
+                } catch (SocketException e) {
+                    // TODO Auto-generated catch block
+                    e.printStackTrace();
+                } catch (IOException e) {
+                    // TODO Auto-generated catch block
+                    e.printStackTrace();
+                }
+            }
+        }.start();
+    }
+
+    private InetAddress getBroadcastAddress() throws IOException {
+        WifiManager wifi = (WifiManager) getSystemService(Context.WIFI_SERVICE);
+        DhcpInfo dhcp = wifi.getDhcpInfo();
+        if (dhcp == null) {
+            Log.d("test", "Could not get dhcp info");
+            return null;
+        }
+
+        int broadcast = (dhcp.ipAddress & dhcp.netmask) | ~dhcp.netmask;
+        byte[] quads = new byte[4];
+        for (int k = 0; k < 4; k++) {
+            quads[k] = (byte) ((broadcast >> k * 8) & 0xFF);
+        }
+        return InetAddress.getByAddress(quads);
+    }
+
+    private void sendDiscoveryRequest(DatagramSocket socket) throws IOException {
+        String data = "DISCOVER_SERVER_REQUEST";
+
+        DatagramPacket packet = new DatagramPacket(data.getBytes(),
+                data.length(), getBroadcastAddress(), UDP_PORT);
+
+        socket.send(packet);
+    }
+
+    protected void listenForResponses(DatagramSocket socket) throws SocketException {
+        // TODO Auto-generated method stub
+        byte buf[] = new byte[1024];
+        DatagramPacket pack = new DatagramPacket(buf, 1024);
+        try {
+            socket.receive(pack);
+            String message = new String(pack.getData()).trim();
+            if (message.equals("DISCOVER_SERVER_RESPONSE")) {
+                Log.i("test", "server ip : " + pack.getAddress().getHostAddress());
+            }
+        } catch (IOException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
+    }
     // ---------------------------------------------------------------
     // Listen to hotspot change
     private final class WifiReceiver extends BroadcastReceiver {
